@@ -1,8 +1,9 @@
 module WHAM
-using StaticArrays
+# using StaticArrays
+using DelimitedFiles
 
 struct WHAMParamaters1D
-    temp::Float64
+    β::Float64
     nWindow::Int16
     nBin::Int16
     lowerBound::Float64
@@ -27,7 +28,7 @@ function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
     lowerBound = bound[1]
     tmp = lowerBound - 0.5*binWidth
     binCenter = [i*binWidth + tmp for i in 1:nBin]
-    whamParam = WHAMParamaters1D(temp, nw, nBin, lowerBound, k, binWidth,
+    whamParam = WHAMParamaters1D(1.0/temp, nw, nBin, lowerBound, k, binWidth,
         windowCenter, binCenter)
     whamArray = WHAMArrays1D(Matrix{Float64}(undef, nBin, nw),
         Matrix{Float64}(undef, nBin, nw), Vector{Int32}(undef, nw))
@@ -54,35 +55,35 @@ function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
     return setup(temp, nw, bound, windowCenter, k, nBin, binWidth)
 end
 
-function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
-    k::T; binWidth::T=nothing) where T <: AbstractFloat
-    sort!(bound)
-    tmp = (bound[2]-bound[1]) / binWidth
-    if ! isinteger(tmp)
-        println(
-        """The number of bins calculated based the bin size and boundaries
-        isn't integer. Setup will use the next integer value based on the
-        computed number of bins.
-        """)
-        nBin = floor(tmp) + 1
-    end
-    binWidth = (bound[2]-bound[1]) / nBin
-    return setup(temp, nw, bound, windowCenter, k, nBin, binWidth)
-end
-
-function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
-    k::T; nBin::Integer=nothing, binWidth::T=nothing) where T <: AbstractFloat
-    sort!(bound)
-    if abs(nBin*binWidth - (bound[2]-bound[1])) > eps()
-        println(
-        """Both number of bins and bin width are provided in the arguments.
-        The total size of n_bin × w_bin isn't consistent with the boundaries.
-        Setup will be based on the number of bins to avoid possible conflicts.
-        """)
-    end
-    binWidth = (bound[2]-bound[1]) / nBin
-    return setup(temp, nw, bound, windowCenter, k, nBin, binWidth)
-end
+# function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
+#     k::T; binWidth::T=nothing) where T <: AbstractFloat
+#     sort!(bound)
+#     tmp = (bound[2]-bound[1]) / binWidth
+#     if ! isinteger(tmp)
+#         println(
+#         """The number of bins calculated based the bin size and boundaries
+#         isn't integer. Setup will use the next integer value based on the
+#         computed number of bins.
+#         """)
+#         nBin = floor(tmp) + 1
+#     end
+#     binWidth = (bound[2]-bound[1]) / nBin
+#     return setup(temp, nw, bound, windowCenter, k, nBin, binWidth)
+# end
+# 
+# function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
+#     k::T; nBin::Integer=nothing, binWidth::T=nothing) where T <: AbstractFloat
+#     sort!(bound)
+#     if abs(nBin*binWidth - (bound[2]-bound[1])) > eps()
+#         println(
+#         """Both number of bins and bin width are provided in the arguments.
+#         The total size of n_bin × w_bin isn't consistent with the boundaries.
+#         Setup will be based on the number of bins to avoid possible conflicts.
+#         """)
+#     end
+#     binWidth = (bound[2]-bound[1]) / nBin
+#     return setup(temp, nw, bound, windowCenter, k, nBin, binWidth)
+# end
 
 """
     function biasedDistibution(traj::Vector)
@@ -100,76 +101,91 @@ function biasedDistibution(traj::Vector{T}, iw::Integer,
     hist = zeros(nb)
     nCollected = 0.0
     println("Processing window number $iw")
-    for rc in 1:traj
+    for rc in traj
         dx = (rc-lb) / bw
         if dx < 0 || dx >= nb
             continue
         end
-        index = Int16(dx + 1)
+        index = floor(Int16, dx+1.0)
         hist[index] += 1.0
         nCollected += 1.0
     end
     array.pBiased[:, iw] = hist ./ nCollected
+    # file = string("hist_", iw, ".txt")
+    # open(file, "w") do io
+    #     writedlm(io, hist)
+    # end
     array.nPoints[iw] = nCollected
-    @. array.vBiased[iw] = exp(-param.temp*fc*(param.binCenter-param.windowCenter[iw])^2)
+    @. array.vBiased[:, iw] = exp(-param.β*fc*(param.binCenter-param.windowCenter[iw])^2)
     return array
-end
-
+end 
+ 
 """
     function unbias(param::WHAMParamaters1D, array::WHAMArrays1D, tol::Float64=10e-9)
 
 The procedure and notations mostly follow [this Nwchem document](http://www.nwchem-sw.org/images/Nwchem-new-pmf.pdf)
 """
 function unbias(param::WHAMParamaters1D, array::WHAMArrays1D,
-    tol::Float64=10e-9, maxCycle::Integer=10000000)
+    tol::Float64=1e-12, maxCycle::Integer=20000000)
     
-    nb = param.nBin
-    nw = param.nWindow
-    beta = param.temp
+    interval = maxCycle / 100
+    nb = param.nBin + 0
+    nw = param.nWindow + 0
+    beta = param.β
     println("""Starting unbias procedure.
     Total number of windows: $nw
     Total number of bins: $nb
     Self-consistent criteria: $tol
     Max number of iterations: $maxCycle""")
 
-    pUnbiased = MVector{n, Float64}(undef)
-    fi = @MVector fill(1.0, nw)
-    pBiased = @MMatrix array.pBiased
-    vBiased = @MMatrix array.vBiased
-    nPoints = @MVector array.nPoints
+    pUnbiased = Vector{Float64}(undef, nb)
+    fi = ones(nw)
+    # to pre compile the function
+    unbiasedProbability!(pUnbiased, fi, array)
+    computeError(pUnbiased, fi, array)
     eps = tol
 
     iter = 0
-    while eps >= tol && iter <= maxCycle
-        for i in 1:nb
-            numer = 0.0; denom = 0.0
-            denom += nPoints * vBiased[i, :] / fi 
-            numer += nPoints * pBiased[i, :]
-            numer /= denom
-            if numer == 0.0
-                numer = 1e-15
-            end
-            pUnbiased[i] = numer
-        end
+    while eps >= tol
+        unbiasedProbability!(pUnbiased, fi, array)
 
-        eps = 0.0
-        for i in 1:nw
-            fi_old = fi
-            fi_new = sum(vBiased[:, i] .* pUnbiased)
-            fi[i] = fi_new
-            eps += (1.0 - fi_new/fi_old)^2
-        end
+        eps, fi = computeError(pUnbiased, fi, array)
         iter += 1
-        if iter % 100000 == 0
-            println("""Current number of iterations: $iter
-            Current total error: $eps""")
+        if iter % interval == 0
+            println("Current number of iterations: $iter ",
+            "Current total error: $eps")
         end
     end
+    if iter > maxCycle
+        error("Failed to converge after $maxCycle cycles")
+    else
+        println("Converged in $iter cycles")
+    end
 
-    pmf = - 1.0 / beta * log(pUnbiased)
+    pmf = Vector{Float64}(undef, nb)
+    @. pmf = - 1.0 / beta * log(pUnbiased)
     pmin = minimum(pmf)
     pmf .-= pmin
-    return pmf
+    return param.binCenter, pmf
+end
+
+function unbiasedProbability!(pUnbiased::Vector{T}, fi::Vector{T},
+    array::WHAMArrays1D) where T <: AbstractFloat
+
+    pUnbiased[:] = (array.pBiased * array.nPoints) ./ (array.vBiased *
+        (array.nPoints ./ fi))
+    index = findall(x->x==0.0, pUnbiased)
+    pUnbiased[index] .= 1e-15
+    return pUnbiased
+end
+
+function computeError(pUnbiased::Vector{T}, fi::Vector{T},
+    array::WHAMArrays1D) where T <: AbstractFloat
+
+    fi_old = deepcopy(fi)
+    fi[:] = transpose(array.vBiased) * pUnbiased
+    eps = sum( (1.0 .- fi./fi_old).^2 )
+    return eps, fi
 end
 
 end # module
