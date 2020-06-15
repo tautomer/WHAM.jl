@@ -1,6 +1,7 @@
 module WHAM
-# using StaticArrays
 using DelimitedFiles
+using Statistics: mean, varm
+using NumericalIntegration: integrate, SimpsonEven
 
 struct WHAMParamaters1D
     β::Float64
@@ -19,6 +20,10 @@ mutable struct WHAMArrays1D
     nPoints::Vector{Float64}
 end
 
+mutable struct UIArrays1D
+    meanval::Vector{Float64}
+    sqdev::Vector{Float64}
+end
 function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
     k::T, nBin::Integer, binWidth::T) where T <: AbstractFloat
 
@@ -90,7 +95,6 @@ end
     
 compute the biased distibutions and corresponding baised potentials
 """
-const x = 1
 function biasedDistibution(traj::Vector{T}, iw::Integer,
     param::WHAMParamaters1D, array::WHAMArrays1D) where T <: AbstractFloat
 
@@ -123,7 +127,7 @@ end
 """
     function unbias(param::WHAMParamaters1D, array::WHAMArrays1D, tol::Float64=10e-9)
 
-The procedure and notations mostly follow [this Nwchem document](http://www.nwchem-sw.org/images/Nwchem-new-pmf.pdf)
+The procedure and notations mostly follow [this Nwchem document](http://www.nwschem-sw.org/images/Nwchem-new-pmf.pdf)
 """
 function unbias(param::WHAMParamaters1D, array::WHAMArrays1D,
     tol::Float64=1e-12, maxCycle::Integer=20000000)
@@ -186,6 +190,39 @@ function computeError(pUnbiased::Vector{T}, fi::Vector{T},
     fi[:] = transpose(array.vBiased) * pUnbiased
     eps = sum( (1.0 .- fi./fi_old).^2 )
     return eps, fi
+end
+
+function windowStats(x::AbstractVector{T}) where T <: AbstractFloat
+    meanval = mean(x)
+    sqdev = varm(x, meanval, corrected=false)
+    return meanval, sqdev
+end
+
+"""
+    function integration(array::UIArrays1D, param::WHAMParamaters1D)
+
+Umbrella integration scheme. Reference https://aip.scitation.org/doi/10.1063/1.2052648
+"""
+function integration(array::UIArrays1D, param::WHAMParamaters1D)
+    c1 = 1 / sqrt(2π)
+    temp = 1.0 / param.β
+    k = 2.0param.k
+    function pbiased(σ2, ξbar, x)
+        p = c1 / sqrt(σ2) * exp(-0.5*(x-ξbar)^2/σ2) 
+        return p
+    end
+    function unbiasDeriv(σ2, ξbar, ξᵢ, x)
+        ∇ = temp * (x-ξbar) / σ2 - k * (x-ξᵢ)
+        return ∇
+    end
+    p = pbiased.(array.sqdev, array.meanval,
+        reshape(param.binCenter, 1, param.nBin))
+    der = unbiasDeriv.(array.sqdev, array.meanval, param.windowCenter,
+        reshape(param.binCenter, 1, param.nBin))
+    p ./= sum(p, dims=1)
+    ∂A∂ξ = vec(sum(p .* der, dims=1))
+    pmf = integrate(param.binCenter, ∂A∂ξ, SimpsonEven())
+    return pmf
 end
 
 end # module
