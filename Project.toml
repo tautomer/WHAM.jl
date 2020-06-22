@@ -2,3 +2,8 @@ name = "WHAM"
 uuid = "9e67796f-ac18-45d1-9e63-64be17af48c3"
 authors = ["Xinyang Li <soybeanyoung@gmail.com>"]
 version = "0.1.0"
+
+[deps]
+DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
+NumericalIntegration = "e7bfaba1-d571-5449-8927-abc22e82249b"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
