@@ -3,7 +3,7 @@ using DelimitedFiles
 using Statistics: mean, varm
 using NumericalIntegration: integrate, cumul_integrate, SimpsonEven
 
-struct WHAMParamaters1D
+struct Paramaters1D
     β::Float64
     nWindow::Int64
     nBin::Int64
@@ -24,72 +24,100 @@ struct UIArrays1D
     mean::Vector{Float64}
     var::Vector{Float64}
 end
-function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
-    k::T, nBin::Integer, binWidth::T) where T <: AbstractFloat
+
+"""
+    function setup(temp::T, nw::Integer, lb::T, windowCenter::Vector{T},
+        k::T, nBin::Integer, binWidth::T, method::Symbol) where T <: AbstractFloat
+
+The function that directly generates all required stuff for WHAM or UI.
+"""
+function setup(temp::T, nw::Integer, lb::T, windowCenter::Vector{T},
+    k::T, nBin::Integer, binWidth::T, method::Symbol) where T <: AbstractFloat
 
     if nw != length(windowCenter)
         error("Number of windows and size of window centers mismatch.")
     end
-    lowerBound = bound[1]
-    tmp = lowerBound - 0.5*binWidth
+    if nBin <= min(1, nw)
+        error("Number of bins too small")
+    end
+    tmp = lb - 0.5*binWidth
     binCenter = [i*binWidth + tmp for i in 1:nBin]
-    whamParam = WHAMParamaters1D(1.0/temp, nw, nBin, lowerBound, k, binWidth,
+    param = Paramaters1D(1.0/temp, nw, nBin, lb, k, binWidth,
         windowCenter, binCenter)
-    whamArray = WHAMArrays1D(Matrix{Float64}(undef, nBin, nw),
-        Matrix{Float64}(undef, nBin, nw), Vector{Int32}(undef, nw))
-    uiArray = UIArrays1D(Vector{Float64}(undef, nw), Vector{Float64}(undef, nw))
-    return whamParam, whamArray, uiArray
+    if method == :WHAM
+        whamArray = WHAMArrays1D(Matrix{Float64}(undef, nBin, nw),
+            Matrix{Float64}(undef, nBin, nw), Vector{Int32}(undef, nw))
+        return param, whamArray
+    elseif method == :UI
+        uiArray = UIArrays1D(Vector{Float64}(undef, nw), Vector{Float64}(undef,
+            nw))
+        return param, uiArray
+    else
+        error("Specify method as either `:WHAM` or `umbrellaIntegration`")
+    end
 end
 
-function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
-    k::T) where T <: AbstractFloat
+"""
+    function setup(temp::T1, nw::T2, bound::AbstractVector{T1},
+        windowCenter::AbstractVector{T1}, k::T1; nBin::Union{T2, T3}=nothing,
+        binWidth::Union{T1, T3}=nothing, method::Symbol=:UI) where {T1<:Real,
+        T2<:Integer, T3<:Nothing}
 
-    println(
-    """Warning: no number of bins or bin width provided in the arguments.
-    Will use default value of nBin = 100. It's strongly advised to provide
-    one of those values.""")
-    nBin = 100
+The helper function to set up the parameters for WHAM or UI. After the
+parameters are sorted out, the 'real' `setup` function will be called. Of
+course you can call the real function directly with all the arguments listed
+below properly set. (Note: replace `bound` with the lower bound only.)
+
+    Arguments:
+    `temp`: Temperature in atomic units.
+    `nw`: number of windows.
+    `bound`: Upper and lower limit for data collection. Also used to calculate bin parameters.
+    `windowCenter`: Array of centers of restraints.
+    `k`: Force constant. Now limited to the case that windows are uniformly restrained.
+
+    Optional Arguments:
+    `nBin`: Number of bins.
+    `binWidth`: Bin size.
+    `method`: Unbias algorithm. Default to `umbrella integration`. `WHAM` is also supported.
+"""
+function setup(temp::T1, nw::T2, bound::AbstractVector{T1},
+    windowCenter::AbstractVector{T1}, k::T1; nBin::Union{T2, T3}=nothing,
+    binWidth::Union{T1, T3}=nothing, method::Symbol=:UI) where {T1<:Real,
+    T2<:Integer, T3<:Nothing}
     sort!(bound)
-    binWidth = (bound[2]-bound[1]) / nBin
-    return setup(temp, nw, bound, windowCenter, k, nBin, binWidth)
+    lb = bound[1]
+    len = bound[2] - lb
+    if nBin !== nothing && binWidth !== nothing
+        if abs(nBin*binWidth - len) > eps()
+            println(
+            """Both number of bins and bin width are provided in the arguments.
+            However, The total size of n_bin × w_bin isn't consistent with the
+            boundaries. Setup will be based on the number of bins to avoid
+            possible conflicts.""")
+        else
+            return setup(temp, nw, lb, windowCenter, k, nBin, binWidth, method)
+        end
+    elseif binWidth !== nothing
+        tmp = len / binWidth
+        if ! isinteger(tmp)
+            println(
+            """The number of bins calculated based the bin size and boundaries
+            isn't integer. Setup will use the next integer value based on the
+            computed number of bins.""")
+            nBin = floor(tmp) + 1
+        else
+            return setup(temp, nw, lb, windowCenter, k, tmp, binWidth, method)
+        end
+    elseif nBin === nothing && binWidth === nothing
+        println(
+        """Warning: no number of bins or bin width provided in the arguments.
+        Will use default value of nBin = 100. It's strongly advised to provide
+        one of those values.""")
+        nBin = 100
+    end
+    binWidth = len / nBin
+    return setup(temp, nw, lb, windowCenter, k, nBin, binWidth, method)
 end
-
-function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
-    k::T; nBin::Integer=nothing) where T <: AbstractFloat
-    sort!(bound)
-    binWidth = (bound[2]-bound[1]) / nBin
-    return setup(temp, nw, bound, windowCenter, k, nBin, binWidth)
-end
-
-# function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
-#     k::T; binWidth::T=nothing) where T <: AbstractFloat
-#     sort!(bound)
-#     tmp = (bound[2]-bound[1]) / binWidth
-#     if ! isinteger(tmp)
-#         println(
-#         """The number of bins calculated based the bin size and boundaries
-#         isn't integer. Setup will use the next integer value based on the
-#         computed number of bins.
-#         """)
-#         nBin = floor(tmp) + 1
-#     end
-#     binWidth = (bound[2]-bound[1]) / nBin
-#     return setup(temp, nw, bound, windowCenter, k, nBin, binWidth)
-# end
-# 
-# function setup(temp::T, nw::Integer, bound::Vector{T}, windowCenter::Vector{T},
-#     k::T; nBin::Integer=nothing, binWidth::T=nothing) where T <: AbstractFloat
-#     sort!(bound)
-#     if abs(nBin*binWidth - (bound[2]-bound[1])) > eps()
-#         println(
-#         """Both number of bins and bin width are provided in the arguments.
-#         The total size of n_bin × w_bin isn't consistent with the boundaries.
-#         Setup will be based on the number of bins to avoid possible conflicts.
-#         """)
-#     end
-#     binWidth = (bound[2]-bound[1]) / nBin
-#     return setup(temp, nw, bound, windowCenter, k, nBin, binWidth)
-# end
 
 """
     function biasedDistibution(traj::Vector)
@@ -97,7 +125,7 @@ end
 compute the biased distibutions and corresponding baised potentials
 """
 function biasedDistibution(traj::Vector{T}, iw::Integer,
-    param::WHAMParamaters1D, array::WHAMArrays1D) where T <: AbstractFloat
+    param::Paramaters1D, array::WHAMArrays1D) where T <: AbstractFloat
 
     nb = param.nBin
     lb = param.lowerBound
@@ -126,11 +154,11 @@ function biasedDistibution(traj::Vector{T}, iw::Integer,
 end 
  
 """
-    function unbias(param::WHAMParamaters1D, array::WHAMArrays1D, tol::Float64=10e-9)
+    function unbias(param::Paramaters1D, array::WHAMArrays1D, tol::Float64=10e-9)
 
 The procedure and notations mostly follow [this Nwchem document](http://www.nwschem-sw.org/images/Nwchem-new-pmf.pdf)
 """
-function unbias(param::WHAMParamaters1D, array::WHAMArrays1D,
+function unbias(param::Paramaters1D, array::WHAMArrays1D,
     tol::Float64=1e-12, maxCycle::Integer=20000000)
     
     interval = maxCycle / 100
@@ -199,14 +227,12 @@ function windowStats(x::AbstractVector{T}) where T <: AbstractFloat
     return meanval, sqdev
 end
 
-using TimerOutputs
-
 """
-    function integration(array::UIArrays1D, param::WHAMParamaters1D)
+    function integration(array::UIArrays1D, param::Paramaters1D)
 
 Umbrella integration scheme. Reference https://aip.scitation.org/doi/10.1063/1.2052648
 """
-function integration(param::WHAMParamaters1D, array::UIArrays1D)
+function integration(param::Paramaters1D, array::UIArrays1D)
     println("""Performing numerical integration.
     Total number of windows: $(param.nWindow)
     Total number of bins: $(param.nBin)""")
@@ -221,15 +247,13 @@ function integration(param::WHAMParamaters1D, array::UIArrays1D)
         ∇ = temp * (x-ξbar) / σ2 - k * (x-ξᵢ)
         return ∇
     end
-    reset_timer!()
-    @timeit "get p" p = pbiased.(array.var, array.mean,
+    p = pbiased.(array.var, array.mean,
         reshape(param.binCenter, 1, param.nBin))
-    @timeit "get der" der = unbiasDeriv.(array.var, array.mean, param.windowCenter,
+    der = unbiasDeriv.(array.var, array.mean, param.windowCenter,
         reshape(param.binCenter, 1, param.nBin))
-    @timeit "normlize p" p ./= sum(p, dims=1)
-    @timeit "get deriv" ∂A∂ξ = vec(sum(p .* der, dims=1))
-    @timeit "integration" pmf = cumul_integrate(param.binCenter, ∂A∂ξ)
-    print_timer()
+    p ./= sum(p, dims=1)
+    ∂A∂ξ = vec(sum(p .* der, dims=1))
+    pmf = cumul_integrate(param.binCenter, ∂A∂ξ)
     pmin = minimum(pmf)
     pmf .-= pmin
     return param.binCenter, pmf
