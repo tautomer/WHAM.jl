@@ -2,6 +2,7 @@ module WHAM
 using DelimitedFiles
 using Statistics: mean, varm
 using NumericalIntegration: integrate, cumul_integrate, SimpsonEven
+using LinearAlgebra: mul!
 
 struct Paramaters1D
     β::Float64
@@ -45,8 +46,8 @@ function setup(temp::T, nw::Integer, lb::T, windowCenter::Vector{T},
     param = Paramaters1D(1.0/temp, nw, nBin, lb, k, binWidth,
         windowCenter, binCenter)
     if method == :WHAM
-        whamArray = WHAMArrays1D(Matrix{Float64}(undef, nBin, nw),
-            Matrix{Float64}(undef, nBin, nw), Vector{Int32}(undef, nw))
+        whamArray = WHAMArrays1D(zeros(nBin, nw), Matrix{Float64}(undef, nBin,
+            nw), Vector{Int32}(undef, nw))
         return param, whamArray
     elseif method == :UI
         uiArray = UIArrays1D(Vector{Float64}(undef, nw), Vector{Float64}(undef,
@@ -131,7 +132,8 @@ function biasedDistibution(traj::Vector{T}, iw::Integer,
     lb = param.lowerBound
     bw = param.binWidth
     fc = param.k
-    hist = zeros(nb)
+    hist = @view array.pBiased[:, iw]
+    vBiased = @view array.vBiased[:, iw]
     nCollected = 0.0
     println("Processing window number $iw")
     for rc in traj
@@ -143,13 +145,13 @@ function biasedDistibution(traj::Vector{T}, iw::Integer,
         hist[index] += 1.0
         nCollected += 1.0
     end
-    array.pBiased[:, iw] = hist ./ nCollected
+    hist ./= nCollected
     # file = string("hist_", iw, ".txt")
     # open(file, "w") do io
     #     writedlm(io, hist)
     # end
     array.nPoints[iw] = nCollected
-    @. array.vBiased[:, iw] = exp(-param.β*fc*(param.binCenter-param.windowCenter[iw])^2)
+    @. vBiased = exp(-param.β*fc*(param.binCenter-param.windowCenter[iw])^2)
     return array
 end 
  
@@ -172,17 +174,18 @@ function unbias(param::Paramaters1D, array::WHAMArrays1D,
     Max number of iterations: $maxCycle""")
 
     pUnbiased = Vector{Float64}(undef, nb)
-    fi = ones(nw)
+    cache = similar(pUnbiased)
+    fi = ones(nw, 3)
     # to pre compile the function
-    unbiasedProbability!(pUnbiased, fi, array)
-    computeError(pUnbiased, fi, array)
+    # unbiasedProbability!(pUnbiased, fi, array, cache)
+    # computeError(pUnbiased, fi, array)
     eps = tol
 
     iter = 0
     while eps >= tol
-        unbiasedProbability!(pUnbiased, fi, array)
+        unbiasedProbability!(pUnbiased, fi, array, cache)
 
-        eps, fi = computeError(pUnbiased, fi, array)
+        eps = computeError(pUnbiased, fi, array)
         iter += 1
         if iter % interval == 0
             println("Current number of iterations: $iter ",
@@ -202,26 +205,40 @@ function unbias(param::Paramaters1D, array::WHAMArrays1D,
     return param.binCenter, pmf
 end
 
-function unbiasedProbability!(pUnbiased::Vector{T}, fi::Vector{T},
-    array::WHAMArrays1D) where T <: AbstractFloat
+function unbiasedProbability!(pUnbiased::Vector{T}, f::AbstractMatrix{T},
+    array::WHAMArrays1D, cache::Vector{T}) where T<:Real 
 
-    pUnbiased[:] = (array.pBiased * array.nPoints) ./ (array.vBiased *
-        (array.nPoints ./ fi))
-    index = findall(x->x==0.0, pUnbiased)
-    pUnbiased[index] .= 1e-15
+    fi = @view f[:, 1]
+    fi_cache = @view f[:, 2]
+    mul!(pUnbiased, array.pBiased, array.nPoints)
+    @. fi_cache = array.nPoints / fi
+    mul!(cache, array.vBiased, fi_cache)
+    pUnbiased ./= cache
+    for i in eachindex(pUnbiased)
+        if pUnbiased[i] == 0.0
+            pUnbiased[i] = 1e-15
+        end
+    end
+    # TODO: keep it simple like this and also avoid allocations?
+    # index = findall(x->x==0.0, pUnbiased)
+    # pUnbiased[index] .= 1e-15
     return pUnbiased
 end
 
-function computeError(pUnbiased::Vector{T}, fi::Vector{T},
-    array::WHAMArrays1D) where T <: AbstractFloat
+function computeError(pUnbiased::Vector{T}, f::Matrix{T}, array::WHAMArrays1D
+    ) where T<:Real
 
-    fi_old = deepcopy(fi)
-    fi[:] = transpose(array.vBiased) * pUnbiased
-    eps = sum( (1.0 .- fi./fi_old).^2 )
-    return eps, fi
+    fi = @view f[:, 1]
+    fi_old = @view f[:, 2]
+    fi_cache = @view f[:, 3]
+    copy!(fi_old, fi)
+    mul!(fi, transpose(array.vBiased), pUnbiased)
+    @. fi_cache = (1.0 - fi/fi_old)^2
+    eps = sum(fi_cache)
+    return eps
 end
 
-function windowStats(x::AbstractVector{T}) where T <: AbstractFloat
+function windowStats(x::AbstractVector{T}) where T<:Real
     meanval = mean(x)
     sqdev = varm(x, meanval, corrected=false)
     return meanval, sqdev
