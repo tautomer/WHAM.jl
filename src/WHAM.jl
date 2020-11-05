@@ -44,7 +44,7 @@ function setup(temp::T, nw::Integer, lb::T, windowCenter::Vector{T},
     tmp = lb - 0.5*binWidth
     binCenter = [i*binWidth + tmp for i in 1:nBin]
     param = Paramaters1D(1.0/temp, nw, nBin, lb, k, binWidth,
-        windowCenter, binCenter)
+        copy(windowCenter), binCenter)
     if method == :WHAM
         whamArray = WHAMArrays1D(zeros(nBin, nw), Matrix{Float64}(undef, nBin,
             nw), Vector{Int32}(undef, nw))
@@ -125,7 +125,7 @@ end
     
 compute the biased distibutions and corresponding baised potentials
 """
-function biasedDistibution(traj::Vector{T}, iw::Integer,
+function biasedDistibution!(traj::Vector{T}, iw::Integer,
     param::Paramaters1D, array::WHAMArrays1D) where T <: AbstractFloat
 
     nb = param.nBin
@@ -135,7 +135,6 @@ function biasedDistibution(traj::Vector{T}, iw::Integer,
     hist = @view array.pBiased[:, iw]
     vBiased = @view array.vBiased[:, iw]
     nCollected = 0.0
-    println("Processing window number $iw")
     for rc in traj
         dx = (rc-lb) / bw
         if dx < 0 || dx >= nb
@@ -160,7 +159,7 @@ end
 
 The procedure and notations mostly follow [this Nwchem document](http://www.nwschem-sw.org/images/Nwchem-new-pmf.pdf)
 """
-function unbias(param::Paramaters1D, array::WHAMArrays1D,
+function stitch(param::Paramaters1D, array::WHAMArrays1D,
     tol::Float64=1e-12, maxCycle::Integer=20000000)
     
     interval = maxCycle / 100
@@ -184,9 +183,11 @@ function unbias(param::Paramaters1D, array::WHAMArrays1D,
     iter = 0
     while eps >= tol
         unbiasedProbability!(pUnbiased, fi, array, cache)
-
         eps = computeError(pUnbiased, fi, array)
         iter += 1
+        # if isnan(eps) || isinf(eps)
+        #     error("`eps` value error during cycle $iter")
+        # end
         if iter % interval == 0
             println("Current number of iterations: $iter ",
             "Current total error: $eps")
@@ -296,6 +297,38 @@ function TSTRate(bin::AbstractArray{T}, pmf::AbstractArray{T}, β::T, μ::T
     prefactor = 1.0 / (2π*β*μ)
     qr = integrate(bin, reactant, SimpsonEven())
     return prefactor * reactant[1] / abs(qr)
+end
+
+function cv(x::Vector{T}) where T<:Real
+    return x[1]
+end
+
+function cv(x::Matrix{T}) where T<:Real
+    return @views mean(x[:, 1])
+end
+
+function biased!(array::WHAMArrays1D, param::Paramaters1D, cv::Vector{T},
+    iw::Integer) where T<:Real
+
+    println("Processing window number $iw")
+    biasedDistibution!(cv, iw, param, array)
+end
+
+function biased!(array::UIArrays1D, param::Paramaters1D, cv::Vector{T},
+    iw::Integer) where T<:Real
+
+    println("Processing window number $iw")
+    array.mean[iw], array.var[iw] = windowStats(cv)
+end
+
+function unbias(array::UIArrays1D, param::Paramaters1D)
+
+    return integration(param, array)
+end
+
+function unbias(array::WHAMArrays1D, param::Paramaters1D)
+
+    return stitch(param, array)
 end
 
 end # module
