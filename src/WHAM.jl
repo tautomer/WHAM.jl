@@ -1,6 +1,6 @@
 module WHAM
 using DelimitedFiles
-using Statistics: mean, varm
+using StatsBase: mean, var
 using NumericalIntegration: integrate, cumul_integrate, SimpsonEven
 using LinearAlgebra: mul!
 
@@ -241,7 +241,7 @@ end
 
 function windowStats(x::AbstractVector{T}) where T<:Real
     meanval = mean(x)
-    sqdev = varm(x, meanval, corrected=false)
+    sqdev = var(x, mean=meanval, corrected=false)
     return meanval, sqdev
 end
 
@@ -303,7 +303,7 @@ function cv(x::Vector{T}) where T<:Real
     return x[1]
 end
 
-function cv(x::Matrix{T}) where T<:Real
+function cv(x::Matrix{Float64})
     return @views mean(x[:, 1])
 end
 
